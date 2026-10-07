@@ -24,6 +24,11 @@ fi
 
 for project in backend frontend; do
   if [ ! -d "$ROOT_DIR/$project/node_modules" ]; then
+    if [ ! -f "$ROOT_DIR/$project/package-lock.json" ]; then
+      printf 'Error: %s/package-lock.json is missing. Generate it with (cd %s && npm install), then run this script again.\n' \
+        "$project" "$project" >&2
+      exit 1
+    fi
     printf 'Installing %s dependencies...\n' "$project"
     (cd "$ROOT_DIR/$project" && npm ci)
   fi

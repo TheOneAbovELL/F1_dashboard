@@ -10,8 +10,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "verify": "tsx scripts/verifyApi.ts",
-    "prefetch": "tsx scripts/prefetchTracks.ts"
+    "verify": "tsx ../scripts/verifyApi.ts",
+    "prefetch": "tsx ../scripts/prefetchTracks.ts"
   },
   "dependencies": {
     "compression": "^1.7.4",

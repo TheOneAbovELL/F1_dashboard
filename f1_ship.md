@@ -6,22 +6,41 @@ The backend and frontend remain separate npm projects, but the root
 
 ## One-command development startup
 
-Requirements: Bash, Node.js 20 or newer, and npm. From Git Bash, WSL, or another Bash
-shell at the project root, run:
+Requirements: Bash, Node.js 20 or newer, and npm. On Windows, use Git Bash. From the
+project root, make the launcher executable once if desired, then run it:
+
+```bash
+chmod +x start.sh
+./start.sh
+```
+
+Or run it without changing file permissions:
 
 ```bash
 bash start.sh
 ```
 
-The launcher installs a project's locked dependencies with `npm ci` if that project's
-`node_modules` directory is missing, then starts the backend and frontend in parallel.
-Open <http://localhost:5173>; the backend listens on port 3001 by default. Press
-`Ctrl+C` once to stop both services.
+The repository includes `backend/package-lock.json` and `frontend/package-lock.json`.
+When either project's `node_modules` directory is missing, the launcher installs that
+project's locked dependencies with `npm ci`, then starts both dev servers in parallel.
+If you create or change a package manifest without its lockfile, generate the lockfile
+first by running `npm install` in that project directory. Open
+<http://localhost:5173>; the backend listens on port 3001 by default. Press `Ctrl+C` to
+stop both services. On Git Bash for Windows, the launcher uses `taskkill.exe` to stop
+the child process trees as well.
 
 The backend chooses the latest completed race unless `REPLAY_SESSION_KEY` is set in
 `backend/.env`. Its first uncached load may take several minutes; cached OpenF1
 responses are stored under `backend/.cache/openf1`. Use
-[`backend/.env.example`](./backend/.env.example) as the configuration reference.
+[`backend/.env.example`](./backend/.env.example) as the configuration reference. The
+environment file is optional because defaults are provided. There is no frontend
+`.env.example`; Vite proxies API and Socket.IO requests to the local backend by default.
+
+To check expected OpenF1 response fields before the first dashboard start, run:
+
+```bash
+npm --prefix backend run verify
+```
 
 ## Useful commands
 
