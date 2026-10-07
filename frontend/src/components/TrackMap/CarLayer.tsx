@@ -3,11 +3,18 @@ import { useRaceStore, animationEngine } from '../../store/useRaceStore.js';
 import { useAnimationFrame } from '../../hooks/useAnimationFrame.js';
 import { buildLivery, isSecondCar } from '../../utils/livery.js';
 import type { CoordinateMapper } from '../../utils/coordinateMapper.js';
-import { CAR_LENGTH } from './F1Car.js';
+import { CAR_HEIGHT, CAR_LENGTH } from './F1Car.js';
 
 const CAR_LENGTH_M = 5.6;
-const MIN_CAR_PX = 13;
-const LOD_THRESHOLD_PX = 19;
+/**
+ * At true scale a car is about three pixels wide on a full-screen circuit map, which is
+ * unreadable, so cars are drawn larger than life the way broadcast graphics do.
+ */
+const CAR_SCALE_EXAGGERATION = 4;
+const MIN_CAR_PX = 11;
+const MAX_CAR_PX = 26;
+/** Below this the detailed car art is mush, so the simplified symbol is used instead. */
+const LOD_THRESHOLD_PX = 13;
 
 interface Props {
   mapper: CoordinateMapper;
@@ -28,6 +35,7 @@ export function CarLayer({ mapper, showLabels, showTrails }: Props) {
   }>());
   const trails = useRef(new Map<number, number[]>());
   const frame = useRef(0);
+  const generation = useRef(animationEngine.generation);
 
   const teamNumbers = useMemo(() => {
     const byTeam = new Map<string, number[]>();
@@ -42,13 +50,38 @@ export function CarLayer({ mapper, showLabels, showTrails }: Props) {
     const sampled = animationEngine.sample();
     frame.current++;
 
-    const pxPerCar = Math.max(MIN_CAR_PX, mapper.pxPerMetre * CAR_LENGTH_M);
+    // After a seek the cars are somewhere else entirely; keeping the old points would
+    // draw a straight line across the circuit from the old position to the new one.
+    if (generation.current !== animationEngine.generation) {
+      generation.current = animationEngine.generation;
+      trails.current.clear();
+      for (const node of nodes.current.values()) node.trail?.setAttribute('points', '');
+    }
+
+    const pxPerCar = Math.min(
+      MAX_CAR_PX,
+      Math.max(MIN_CAR_PX, mapper.pxPerMetre * CAR_LENGTH_M * CAR_SCALE_EXAGGERATION),
+    );
     const scale = pxPerCar / CAR_LENGTH;
     const useLod = pxPerCar < LOD_THRESHOLD_PX;
 
+    for (const [n, node] of nodes.current) {
+      // A car the backend is no longer reporting — not yet out, or retired — is hidden
+      // rather than left parked at its last known position.
+      if (!sampled.has(n)) {
+        node.group?.setAttribute('visibility', 'hidden');
+        node.label?.setAttribute('visibility', 'hidden');
+        node.trail?.setAttribute('points', '');
+        trails.current.delete(n);
+      }
+    }
+
     for (const [n, car] of sampled) {
       const node = nodes.current.get(n);
-      if (!node) continue;
+      if (!node?.group) continue;
+
+      node.group.setAttribute('visibility', 'visible');
+      node.label?.setAttribute('visibility', 'visible');
 
       const [px, py] = mapper.project(car.x, car.y);
       const deg = mapper.projectAngle(car.h);
@@ -124,7 +157,19 @@ export function CarLayer({ mapper, showLabels, showTrails }: Props) {
               {selected === d.number && (
                 <circle r="30" fill={d.colour} opacity="0.18" className="animate-pulse-slow" />
               )}
-              <use ref={(el) => registerCar(nodes, d.number, el)} href="#f1-car" />
+              {/*
+                A <use> of a <symbol> with a viewBox defaults to 100% of the nearest
+                viewport, which sizes every car to the whole map. Stating the symbol's
+                own box maps it 1:1, so the group transform controls the size.
+              */}
+              <use
+                ref={(el) => registerCar(nodes, d.number, el)}
+                href="#f1-car"
+                x={-CAR_LENGTH / 2}
+                y={-CAR_HEIGHT / 2}
+                width={CAR_LENGTH}
+                height={CAR_HEIGHT}
+              />
             </g>
           );
         })}

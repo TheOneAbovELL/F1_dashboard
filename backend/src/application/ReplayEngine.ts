@@ -1,10 +1,14 @@
 import type { OpenF1Client } from '../infrastructure/openf1/client.js';
+import type { SessionCatalog } from './SessionCatalog.js';
 import type { DataSink, IDataProvider } from '../domain/IDataProvider.js';
 import type {
   CarPosition, Driver, LeaderboardEntry, RaceControlMessage,
   ReplayState, Session, Telemetry, TrackGeometry, Weather,
 } from '../domain/models.js';
 import { buildTrackGeometry } from '../infrastructure/track/trackBuilder.js';
+import { toMetres } from '../domain/units.js';
+import type { RawLap } from '../infrastructure/openf1/types.js';
+import { isDrsOpen } from '../infrastructure/openf1/types.js';
 import { config } from '../config/index.js';
 import { log } from '../infrastructure/logger.js';
 
@@ -22,7 +26,30 @@ interface TelemetryTimeline {
   cursor: number;
 }
 
-const DRS_OPEN = new Set([10, 12, 14]);
+/** How far outside its samples a car is still drawn, bridging gaps in the feed. */
+const SAMPLE_GRACE_MS = 30_000;
+
+/** Replay starts shortly before the first lap and runs a little past the last. */
+const LEAD_IN_MS = 5 * 60_000;
+const TRAIL_OUT_MS = 3 * 60_000;
+
+interface LapState {
+  lap: number;
+  last: number | null;
+  best: number | null;
+  s: [number | null, number | null, number | null];
+}
+
+/** Index of the last sample at or before `tMs`, so a seek does not walk the timeline. */
+function seekCursor(t: Float64Array, tMs: number): number {
+  let lo = 0;
+  let hi = t.length - 1;
+  while (lo < hi) {
+    const mid = (lo + hi + 1) >> 1;
+    if (t[mid]! <= tMs) lo = mid; else hi = mid - 1;
+  }
+  return Math.max(0, lo);
+}
 
 export class ReplayEngine implements IDataProvider {
   readonly name = 'OpenF1Replay';
@@ -35,7 +62,10 @@ export class ReplayEngine implements IDataProvider {
   private telemetry = new Map<number, TelemetryTimeline>();
   private telemetryLoading = new Set<number>();
 
-  private lapRows: { n: number; lap: number; tMs: number; duration: number | null; s1: number | null; s2: number | null; s3: number | null; pitOut: boolean }[] = [];
+  /** When each lap began, which is when it becomes the driver's current lap. */
+  private lapRows: { n: number; lap: number; tMs: number; pitOut: boolean }[] = [];
+  /** When each lap was completed, which is when its time and sectors may be shown. */
+  private lapResultRows: { n: number; tMs: number; duration: number; s1: number | null; s2: number | null; s3: number | null }[] = [];
   private positionRows: { n: number; tMs: number; pos: number }[] = [];
   private intervalRows: { n: number; tMs: number; gap: number | null; interval: number | null }[] = [];
   private stintRows: { n: number; compound: string | null; lapStart: number; lapEnd: number; age: number }[] = [];
@@ -44,8 +74,22 @@ export class ReplayEngine implements IDataProvider {
 
   private state: ReplayState = {
     loaded: false, loadingPct: 0, playing: false,
-    speed: config.REPLAY_SPEED, tMs: 0, durationMs: 0,
+    speed: config.REPLAY_SPEED, tMs: 0, durationMs: 0, error: null,
   };
+
+  /**
+   * Timing rows are replayed forward with a cursor per stream rather than rescanned
+   * from the start on every tick; `timing` holds the state accumulated so far.
+   */
+  private cursors = { pos: 0, itv: 0, lap: 0, lapResult: 0, weather: 0, rc: 0 };
+  private posState = new Map<number, number>();
+  private itvState = new Map<number, { gap: number | null; interval: number | null }>();
+  private lapStates = new Map<number, LapState>();
+  private weatherState: Weather | null = null;
+  private timingMs = -1;
+
+  /** Absolute epoch ms that the replay treats as t = 0. */
+  private originMs = 0;
 
   private sink: DataSink | null = null;
   private timer: NodeJS.Timeout | null = null;
@@ -53,10 +97,46 @@ export class ReplayEngine implements IDataProvider {
   private virtualAnchor = 0;
   private rcEmitted = 0;
 
-  constructor(private readonly client: OpenF1Client, private readonly sessionKey: number) {}
+  /**
+   * `sessionKey` may be null, meaning "the most recent completed race". Resolving it is
+   * deliberately deferred to `init()` so that a slow or unreachable OpenF1 cannot stop
+   * the HTTP server from coming up and reporting what went wrong.
+   */
+  constructor(
+    private readonly client: OpenF1Client,
+    private requestedSessionKey: number | null,
+    private readonly catalog?: SessionCatalog,
+  ) {}
+
+  private get sessionKey(): number {
+    if (this.requestedSessionKey === null) {
+      throw new Error('session key has not been resolved yet');
+    }
+    return this.requestedSessionKey;
+  }
 
   async init(): Promise<void> {
     if (this.state.loaded) return;
+    try {
+      await this.load();
+    } catch (err) {
+      this.state.error = err instanceof Error ? err.message : String(err);
+      this.sink?.state({ ...this.state });
+      throw err;
+    }
+  }
+
+  private async load(): Promise<void> {
+    if (this.requestedSessionKey === null) {
+      if (!this.catalog) throw new Error('no session key and no catalogue to pick one from');
+      const recent = await this.catalog.mostRecent();
+      if (!recent) throw new Error('no completed race sessions available from OpenF1');
+      this.requestedSessionKey = recent.sessionKey;
+      log.replay.info(
+        { circuit: recent.circuitShortName, year: recent.year, sessionKey: recent.sessionKey },
+        'auto-selected most recent completed race',
+      );
+    }
 
     const [raw] = await this.client.sessions({ session_key: this.sessionKey });
     if (!raw) throw new Error(`session ${this.sessionKey} not found`);
@@ -73,7 +153,6 @@ export class ReplayEngine implements IDataProvider {
       endMs: Date.parse(raw.date_end),
       totalLaps: null,
     };
-    this.state.durationMs = this.session.endMs - this.session.startMs;
 
     const rawDrivers = await this.client.drivers({ session_key: this.sessionKey });
     this.driverList = rawDrivers.map((d) => ({
@@ -87,7 +166,11 @@ export class ReplayEngine implements IDataProvider {
     }));
     this.setProgress(6);
 
-    await this.loadTiming();
+    const laps = await this.client.laps({ session_key: this.sessionKey });
+    this.setReplayWindow(laps);
+    this.setProgress(12);
+
+    await this.loadTiming(laps);
     this.setProgress(22);
 
     this.trackGeometry = await buildTrackGeometry(
@@ -106,21 +189,79 @@ export class ReplayEngine implements IDataProvider {
     );
   }
 
-  private async loadTiming(): Promise<void> {
-    const key = { session_key: this.sessionKey };
-    const base = this.session!.startMs;
+  /**
+   * OpenF1's `date_start`/`date_end` describe the scheduled session slot, and they do
+   * not reliably bracket the running of the race — some sessions report lap data
+   * starting well after `date_start` and finishing more than an hour past `date_end`.
+   * Trusting that slot silently truncates the replay, so the window is taken from the
+   * lap data itself and only falls back to the slot when there are no laps to go on.
+   */
+  private setReplayWindow(laps: RawLap[]): void {
+    const session = this.session!;
+    const starts: number[] = [];
+    const ends: number[] = [];
 
-    const [laps, positions, intervals, stints, rc, weather] = await Promise.all([
-      this.client.laps(key), this.client.positions(key), this.client.intervals(key),
+    for (const l of laps) {
+      if (l.date_start === null) continue;
+      const start = Date.parse(l.date_start);
+      if (!Number.isFinite(start)) continue;
+      starts.push(start);
+      if (l.lap_duration !== null) ends.push(start + l.lap_duration * 1000);
+    }
+
+    let originMs = session.startMs;
+    let endMs = session.endMs;
+
+    if (starts.length > 0) {
+      originMs = Math.min(...starts) - LEAD_IN_MS;
+      endMs = Math.max(...starts, ...ends) + TRAIL_OUT_MS;
+    }
+
+    if (!Number.isFinite(originMs) || !Number.isFinite(endMs) || endMs <= originMs) {
+      throw new Error(`session ${this.sessionKey} has no usable time window`);
+    }
+
+    this.originMs = originMs;
+    this.state.durationMs = endMs - originMs;
+
+    log.replay.info(
+      {
+        sessionKey: this.sessionKey,
+        fromSessionSlot: starts.length === 0,
+        durationMin: Math.round(this.state.durationMs / 60_000),
+        offsetFromSlotMin: Math.round((originMs - session.startMs) / 60_000),
+      },
+      'replay window chosen',
+    );
+  }
+
+  private async loadTiming(laps: RawLap[]): Promise<void> {
+    const key = { session_key: this.sessionKey };
+    const base = this.originMs;
+
+    const [positions, intervals, stints, rc, weather] = await Promise.all([
+      this.client.positions(key), this.client.intervals(key),
       this.client.stints(key), this.client.raceControl(key), this.client.weather(key),
     ]);
 
-    this.lapRows = laps
-      .filter((l) => l.date_start !== null)
+    const started = laps.filter((l) => l.date_start !== null);
+
+    this.lapRows = started
       .map((l) => ({
-        n: l.driver_number, lap: l.lap_number, tMs: Date.parse(l.date_start!) - base,
-        duration: l.lap_duration, s1: l.duration_sector_1, s2: l.duration_sector_2,
-        s3: l.duration_sector_3, pitOut: l.is_pit_out_lap,
+        n: l.driver_number, lap: l.lap_number,
+        tMs: Date.parse(l.date_start!) - base, pitOut: l.is_pit_out_lap,
+      }))
+      .sort((a, b) => a.tMs - b.tMs);
+
+    // A lap's time and sectors are only known once the car crosses the line, so they
+    // are replayed at the completion instant rather than at the lap's start.
+    this.lapResultRows = started
+      .filter((l) => l.lap_duration !== null)
+      .map((l) => ({
+        n: l.driver_number,
+        tMs: Date.parse(l.date_start!) - base + l.lap_duration! * 1000,
+        duration: l.lap_duration!,
+        s1: l.duration_sector_1, s2: l.duration_sector_2, s3: l.duration_sector_3,
       }))
       .sort((a, b) => a.tMs - b.tMs);
 
@@ -160,7 +301,8 @@ export class ReplayEngine implements IDataProvider {
   }
 
   private async loadPositions(): Promise<void> {
-    const { startMs, endMs } = this.session!;
+    const startMs = this.originMs;
+    const endMs = this.originMs + this.state.durationMs;
     const windowMs = config.LOAD_WINDOW_SECONDS * 1000;
     const windows = Math.ceil((endMs - startMs) / windowMs);
     const acc = new Map<number, { t: number[]; x: number[]; y: number[] }>();
@@ -178,9 +320,9 @@ export class ReplayEngine implements IDataProvider {
           if (!Number.isFinite(r.x) || (r.x === 0 && r.y === 0)) continue;
           let bucket = acc.get(r.driver_number);
           if (!bucket) { bucket = { t: [], x: [], y: [] }; acc.set(r.driver_number, bucket); }
-          bucket.t.push(Date.parse(r.date) - startMs);
-          bucket.x.push(r.x);
-          bucket.y.push(r.y);
+          bucket.t.push(Date.parse(r.date) - this.originMs);
+          bucket.x.push(toMetres(r.x));
+          bucket.y.push(toMetres(r.y));
         }
       } catch (err) {
         log.replay.warn({ err, window: i }, 'location window failed, continuing');
@@ -242,10 +384,20 @@ export class ReplayEngine implements IDataProvider {
     this.state.tMs = Math.min(this.state.durationMs, Math.max(0, tMs));
     this.virtualAnchor = this.state.tMs;
     this.wallAnchor = Date.now();
-    for (const tl of this.positions.values()) tl.cursor = 0;
-    for (const tl of this.telemetry.values()) tl.cursor = 0;
-    this.rcEmitted = 0;
+    for (const tl of this.positions.values()) tl.cursor = seekCursor(tl.t, this.state.tMs);
+    for (const tl of this.telemetry.values()) tl.cursor = seekCursor(tl.t, this.state.tMs);
+    this.resetTiming();
     this.sink?.state({ ...this.state });
+  }
+
+  private resetTiming(): void {
+    this.cursors = { pos: 0, itv: 0, lap: 0, lapResult: 0, weather: 0, rc: 0 };
+    this.posState.clear();
+    this.itvState.clear();
+    this.lapStates.clear();
+    this.weatherState = null;
+    this.rcEmitted = 0;
+    this.timingMs = -1;
   }
 
   async stop(): Promise<void> {
@@ -265,21 +417,21 @@ export class ReplayEngine implements IDataProvider {
       this.pause();
     }
 
+    this.advanceTiming(this.state.tMs);
+
     sink.positions(this.positionsAt(this.state.tMs), this.state.tMs);
-    sink.timing(this.leaderboardAt(this.state.tMs));
+    sink.timing(this.leaderboard());
 
     for (const n of this.telemetry.keys()) {
       const t = this.telemetryAt(n, this.state.tMs);
       if (t) sink.telemetry(n, t);
     }
 
-    const w = this.weatherAt(this.state.tMs);
-    if (w) sink.weather(w);
+    if (this.weatherState) sink.weather(this.weatherState);
 
-    const due = this.rcRows.filter((m) => m.tMs <= this.state.tMs);
-    if (due.length !== this.rcEmitted) {
-      this.rcEmitted = due.length;
-      sink.raceControl(due.slice(-25).reverse());
+    if (this.cursors.rc !== this.rcEmitted) {
+      this.rcEmitted = this.cursors.rc;
+      sink.raceControl(this.rcRows.slice(Math.max(0, this.cursors.rc - 25), this.cursors.rc).reverse());
     }
 
     sink.state({ ...this.state });
@@ -291,6 +443,11 @@ export class ReplayEngine implements IDataProvider {
     for (const [n, tl] of this.positions) {
       const len = tl.t.length;
       if (len === 0) continue;
+
+      // Outside a car's own sample window there is nothing to show: before the race it
+      // would sit frozen at its garage slot, and after a retirement it would haunt the
+      // spot where it stopped. The grace period bridges the gaps OpenF1 leaves mid-race.
+      if (tMs < tl.t[0]! - SAMPLE_GRACE_MS || tMs > tl.t[len - 1]! + SAMPLE_GRACE_MS) continue;
 
       while (tl.cursor < len - 1 && tl.t[tl.cursor + 1]! < tMs) tl.cursor++;
       while (tl.cursor > 0 && tl.t[tl.cursor]! > tMs) tl.cursor--;
@@ -316,38 +473,68 @@ export class ReplayEngine implements IDataProvider {
     return out;
   }
 
-  private leaderboardAt(tMs: number): LeaderboardEntry[] {
-    const latest = <T extends { n: number; tMs: number }>(rows: T[]) => {
-      const m = new Map<number, T>();
-      for (const r of rows) { if (r.tMs > tMs) break; m.set(r.n, r); }
-      return m;
-    };
+  /**
+   * Consumes every timing row up to `tMs`. Rewinding is rare (a seek backwards), so it
+   * is handled by replaying from the start rather than by keeping undo information.
+   */
+  private advanceTiming(tMs: number): void {
+    if (tMs < this.timingMs) this.resetTiming();
+    this.timingMs = tMs;
 
-    const pos = latest(this.positionRows);
-    const itv = latest(this.intervalRows);
-
-    const lapState = new Map<number, { lap: number; last: number | null; best: number | null; s: [number | null, number | null, number | null] }>();
-    for (const l of this.lapRows) {
-      if (l.tMs > tMs) break;
-      const cur = lapState.get(l.n) ?? { lap: 0, last: null, best: null, s: [null, null, null] };
-      cur.lap = l.lap;
-      if (l.duration !== null) {
-        cur.last = l.duration;
-        cur.best = cur.best === null ? l.duration : Math.min(cur.best, l.duration);
-      }
-      cur.s = [l.s1, l.s2, l.s3];
-      lapState.set(l.n, cur);
+    while (this.cursors.pos < this.positionRows.length && this.positionRows[this.cursors.pos]!.tMs <= tMs) {
+      const r = this.positionRows[this.cursors.pos++]!;
+      this.posState.set(r.n, r.pos);
     }
 
+    while (this.cursors.itv < this.intervalRows.length && this.intervalRows[this.cursors.itv]!.tMs <= tMs) {
+      const r = this.intervalRows[this.cursors.itv++]!;
+      this.itvState.set(r.n, { gap: r.gap, interval: r.interval });
+    }
+
+    while (this.cursors.lap < this.lapRows.length && this.lapRows[this.cursors.lap]!.tMs <= tMs) {
+      const l = this.lapRows[this.cursors.lap++]!;
+      this.lapStateFor(l.n).lap = l.lap;
+    }
+
+    while (
+      this.cursors.lapResult < this.lapResultRows.length &&
+      this.lapResultRows[this.cursors.lapResult]!.tMs <= tMs
+    ) {
+      const l = this.lapResultRows[this.cursors.lapResult++]!;
+      const cur = this.lapStateFor(l.n);
+      cur.last = l.duration;
+      cur.best = cur.best === null ? l.duration : Math.min(cur.best, l.duration);
+      cur.s = [l.s1, l.s2, l.s3];
+    }
+
+    while (this.cursors.weather < this.weatherRows.length && this.weatherRows[this.cursors.weather]!.tMs <= tMs) {
+      this.weatherState = this.weatherRows[this.cursors.weather++]!;
+    }
+
+    while (this.cursors.rc < this.rcRows.length && this.rcRows[this.cursors.rc]!.tMs <= tMs) {
+      this.cursors.rc++;
+    }
+  }
+
+  private lapStateFor(n: number): LapState {
+    let cur = this.lapStates.get(n);
+    if (!cur) {
+      cur = { lap: 0, last: null, best: null, s: [null, null, null] };
+      this.lapStates.set(n, cur);
+    }
+    return cur;
+  }
+
+  private leaderboard(): LeaderboardEntry[] {
     return this.driverList
       .map((d) => {
-        const ls = lapState.get(d.number);
+        const ls = this.lapStates.get(d.number);
         const lap = ls?.lap ?? 0;
         const stint = this.stintRows.find((s) => s.n === d.number && lap >= s.lapStart && lap <= s.lapEnd);
-        const i = itv.get(d.number);
+        const i = this.itvState.get(d.number);
         return {
           n: d.number,
-          position: pos.get(d.number)?.pos ?? 99,
+          position: this.posState.get(d.number) ?? 99,
           gapToLeader: i?.gap ?? null,
           interval: i?.interval ?? null,
           lapNumber: lap,
@@ -375,19 +562,13 @@ export class ReplayEngine implements IDataProvider {
     };
   }
 
-  private weatherAt(tMs: number): Weather | null {
-    let found: Weather | null = null;
-    for (const w of this.weatherRows) { if (w.tMs > tMs) break; found = w; }
-    return found;
-  }
-
   async subscribeTelemetry(driverNumber: number): Promise<void> {
     if (this.telemetry.has(driverNumber) || this.telemetryLoading.has(driverNumber)) return;
     if (!this.driverList.some((d) => d.number === driverNumber)) return;
     this.telemetryLoading.add(driverNumber);
 
     try {
-      const base = this.session!.startMs;
+      const base = this.originMs;
       const rows = (await this.client.carData({
         session_key: this.sessionKey, driver_number: driverNumber,
       })).sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
@@ -400,8 +581,10 @@ export class ReplayEngine implements IDataProvider {
       };
       rows.forEach((r, i) => {
         tl.t[i] = Date.parse(r.date) - base;
-        tl.speed[i] = r.speed; tl.throttle[i] = r.throttle; tl.brake[i] = r.brake;
-        tl.gear[i] = r.n_gear; tl.rpm[i] = r.rpm; tl.drs[i] = DRS_OPEN.has(r.drs) ? 1 : 0;
+        // Upstream leaves individual channels null on some samples; a gap reads as zero
+        // rather than as NaN propagating into the typed arrays.
+        tl.speed[i] = r.speed ?? 0; tl.throttle[i] = r.throttle ?? 0; tl.brake[i] = r.brake ?? 0;
+        tl.gear[i] = r.n_gear ?? 0; tl.rpm[i] = r.rpm ?? 0; tl.drs[i] = isDrsOpen(r.drs) ? 1 : 0;
       });
       this.telemetry.set(driverNumber, tl);
       log.replay.debug({ driverNumber, samples: len }, 'telemetry loaded');

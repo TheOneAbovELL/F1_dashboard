@@ -24,7 +24,7 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
     <div className="fixed inset-0 z-50 flex items-end justify-end bg-black/40 p-4 backdrop-blur-sm">
       <div className="w-full max-w-md rounded-2xl border border-f1-border bg-f1-panel p-4 shadow-2xl">
         <div className="mb-4 flex items-center justify-between">
-          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-f1-cream">Settings</h3>
+          <h3 className="text-sm font-semibold uppercase tracking-[0.24em] text-f1-text">Settings</h3>
           <button
             onClick={onClose}
             className="rounded-md border border-f1-border bg-white/5 px-2 py-1 text-[10px] uppercase tracking-[0.18em] text-f1-dim"
@@ -33,7 +33,7 @@ export function SettingsSheet({ onClose }: { onClose: () => void }) {
           </button>
         </div>
 
-        <div className="space-y-4 text-xs text-f1-cream">
+        <div className="space-y-4 text-xs text-f1-text">
           {CHECKBOXES.map(([key, label, hint]) => (
             <label
               key={key}

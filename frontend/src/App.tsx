@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRaceStore } from "./store/useRaceStore.js";
 import { useSettings } from "./hooks/useSettings.js";
 import { useIsCompact, useIsMobile } from "./hooks/useMediaQuery.js";
@@ -15,6 +15,11 @@ import { SettingsSheet } from "./components/UI/SettingsSheet.js";
 import { WidgetView } from "./components/Widget/WidgetView.js";
 import { socketService } from "./services/socket.js";
 
+const GRID_AREAS = `
+  "top    top    top"
+  "tower  stage  right"
+  "scrub  scrub  scrub"`;
+
 export default function App() {
   const connect = useRaceStore((s) => s.connect);
   const leaderboard = useRaceStore((s) => s.leaderboard);
@@ -22,9 +27,17 @@ export default function App() {
   const selected = useRaceStore((s) => s.selectedDriver);
   const replay = useRaceStore((s) => s.replay);
 
-  const settings = useSettings();
+  // Subscribing field by field keeps an unrelated settings change from re-rendering the
+  // whole dashboard on every toggle.
+  const showLabels = useSettings((s) => s.showLabels);
+  const showTrails = useSettings((s) => s.showTrails);
+  const showSectors = useSettings((s) => s.showSectors);
+  const showCorners = useSettings((s) => s.showCorners);
+  const rotation = useSettings((s) => s.rotation);
+
   const isCompact = useIsCompact();
   const isMobile = useIsMobile();
+  const isDesktop = !isCompact && !isMobile;
 
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [widget, setWidget] = useState(false);
@@ -60,12 +73,20 @@ export default function App() {
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.target instanceof HTMLInputElement) return;
+      const target = e.target as HTMLElement | null;
+      if (
+        target instanceof HTMLInputElement ||
+        target instanceof HTMLTextAreaElement ||
+        target?.isContentEditable
+      ) {
+        return;
+      }
 
       switch (e.key) {
         case " ":
           e.preventDefault();
-          replay.playing ? socketService.pause() : socketService.play();
+          if (replay.playing) socketService.pause();
+          else socketService.play();
           break;
         case "Escape":
           if (settingsOpen) {
@@ -76,13 +97,25 @@ export default function App() {
           break;
         case "m":
         case "M":
-          widget ? exitWidget() : void enterWidget();
+          if (widget) exitWidget();
+          else void enterWidget();
           break;
+        case "ArrowLeft":
+        case "ArrowRight": {
+          if (replay.durationMs <= 0) break;
+          e.preventDefault();
+          const step = (e.shiftKey ? 60_000 : 10_000) * (e.key === "ArrowRight" ? 1 : -1);
+          const next = Math.round(replay.tMs + step);
+          socketService.seek(Math.max(0, Math.min(replay.durationMs, next)));
+          break;
+        }
         case "ArrowDown":
         case "ArrowUp": {
+          if (leaderboard.length === 0) break;
           e.preventDefault();
           const i = leaderboard.findIndex((x) => x.n === selected);
-          const next = leaderboard[(i + (e.key === "ArrowDown" ? 1 : -1) + leaderboard.length) % leaderboard.length];
+          const step = e.key === "ArrowDown" ? 1 : -1;
+          const next = leaderboard[(i + step + leaderboard.length) % leaderboard.length];
           if (next) selectDriver(next.n);
           break;
         }
@@ -91,7 +124,57 @@ export default function App() {
 
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [replay.playing, settingsOpen, widget, leaderboard, selected, selectDriver, enterWidget, exitWidget]);
+  }, [
+    replay.playing,
+    replay.tMs,
+    replay.durationMs,
+    settingsOpen,
+    widget,
+    leaderboard,
+    selected,
+    selectDriver,
+    enterWidget,
+    exitWidget,
+  ]);
+
+  const panels = useMemo(
+    () => ({
+      top: (
+        <TopBar
+          onOpenSettings={() => setSettingsOpen(true)}
+          onEnterWidget={enterWidget}
+          widgetSupported={pip.supported}
+        />
+      ),
+      map: (
+        <ErrorBoundary label="Track map">
+          <TrackMap
+            showLabels={showLabels}
+            showTrails={showTrails}
+            showSectors={showSectors}
+            showCorners={showCorners}
+            rotation={rotation}
+          />
+        </ErrorBoundary>
+      ),
+      tower: (
+        <ErrorBoundary label="Timing tower">
+          <TimingTower />
+        </ErrorBoundary>
+      ),
+      telemetry: (
+        <ErrorBoundary label="Telemetry">
+          <TelemetryPanel />
+        </ErrorBoundary>
+      ),
+      raceControl: (limit: number) => (
+        <ErrorBoundary label="Race control">
+          <RaceControlFeed limit={limit} />
+        </ErrorBoundary>
+      ),
+    }),
+    [enterWidget, pip.supported, showLabels, showTrails, showSectors, showCorners, rotation],
+  );
 
   if (widget) {
     return (
@@ -114,90 +197,60 @@ export default function App() {
     );
   }
 
-  return (
+  // Only the desktop layout has room for every panel at once, so it alone uses a
+  // fixed-height grid. Narrower viewports stack and scroll: forcing five panels into one
+  // screen is what collapsed the map and the timing tower to nothing.
+  const dashboard = isDesktop ? (
     <div
-      className={[
-        "grid h-screen gap-3 p-3",
-        isMobile
-          ? "grid-rows-[auto_auto_380px_auto_auto] overflow-y-auto"
-          : isCompact
-            ? "grid-rows-[auto_minmax(0,1fr)_auto_auto]"
-            : "grid-cols-[292px_minmax(0,1fr)_318px] grid-rows-[auto_minmax(0,1fr)_auto]",
-      ].join(" ")}
-      style={
-        isMobile || isCompact
-          ? undefined
-          : {
-              gridTemplateAreas: `
-                "top    top    top"
-                "tower  stage  right"
-                "scrub  scrub  scrub"`,
-            }
-      }
+      className="grid h-screen grid-cols-[292px_minmax(0,1fr)_318px] grid-rows-[auto_minmax(0,1fr)_auto] gap-3 p-3"
+      style={{ gridTemplateAreas: GRID_AREAS }}
     >
-      <div style={!isMobile && !isCompact ? { gridArea: "top" } : undefined}>
-        <TopBar
-          onOpenSettings={() => setSettingsOpen(true)}
-          onEnterWidget={enterWidget}
-          widgetSupported={pip.supported}
-        />
+      <div style={{ gridArea: "top" }}>{panels.top}</div>
+
+      <div className="min-h-0" style={{ gridArea: "tower" }}>
+        {panels.tower}
       </div>
 
-      {!isMobile && (
-        <div className="min-h-0" style={!isCompact ? { gridArea: "tower" } : undefined}>
-          <ErrorBoundary label="Timing tower">
-            <TimingTower />
-          </ErrorBoundary>
-        </div>
-      )}
-
-      <div
-        className="flex min-h-0 min-w-0 flex-col gap-3"
-        style={!isMobile && !isCompact ? { gridArea: "stage" } : undefined}
-      >
-        <ErrorBoundary label="Track map">
-          <div className="min-h-0 flex-1">
-            <TrackMap
-              showLabels={settings.showLabels}
-              showTrails={settings.showTrails}
-              showSectors={settings.showSectors}
-              showCorners={settings.showCorners}
-              rotation={settings.rotation}
-            />
-          </div>
-        </ErrorBoundary>
+      <div className="flex min-h-0 min-w-0 flex-col gap-3" style={{ gridArea: "stage" }}>
+        <div className="min-h-0 flex-1">{panels.map}</div>
         <WeatherBar />
       </div>
 
-      <div
-        className={`flex min-h-0 gap-3 ${isCompact && !isMobile ? "flex-row" : "flex-col"}`}
-        style={!isMobile && !isCompact ? { gridArea: "right" } : undefined}
-      >
-        <ErrorBoundary label="Telemetry">
-          <div className={isCompact && !isMobile ? "flex-1" : ""}>
-            <TelemetryPanel />
-          </div>
-        </ErrorBoundary>
-        <ErrorBoundary label="Race control">
-          <div className="min-h-0 flex-1">
-            <RaceControlFeed limit={isCompact ? 8 : 16} />
-          </div>
-        </ErrorBoundary>
+      <div className="flex min-h-0 flex-col gap-3" style={{ gridArea: "right" }}>
+        {panels.telemetry}
+        <div className="min-h-0 flex-1">{panels.raceControl(16)}</div>
       </div>
 
-      {isMobile && (
-        <div className="h-[340px] min-h-0">
-          <ErrorBoundary label="Timing tower">
-            <TimingTower />
-          </ErrorBoundary>
-        </div>
-      )}
-
-      <div style={!isMobile && !isCompact ? { gridArea: "scrub" } : undefined}>
+      <div style={{ gridArea: "scrub" }}>
         <ReplayScrubber />
       </div>
-
-      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
     </div>
+  ) : (
+    <div className="flex h-screen flex-col gap-3 p-3">
+      <div className="shrink-0">{panels.top}</div>
+
+      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto">
+        <div className={`shrink-0 ${isMobile ? "h-[260px]" : "h-[340px]"}`}>{panels.map}</div>
+        <WeatherBar />
+        <div className={`shrink-0 ${isMobile ? "h-[320px]" : "h-[360px]"}`}>{panels.tower}</div>
+        <div className={`flex shrink-0 gap-3 ${isMobile ? "flex-col" : "flex-row"}`}>
+          <div className={isMobile ? "" : "w-[320px] shrink-0"}>{panels.telemetry}</div>
+          <div className={isMobile ? "h-[240px]" : "min-h-[240px] flex-1"}>
+            {panels.raceControl(isMobile ? 8 : 12)}
+          </div>
+        </div>
+      </div>
+
+      <div className="shrink-0">
+        <ReplayScrubber />
+      </div>
+    </div>
+  );
+
+  return (
+    <>
+      {dashboard}
+      {settingsOpen && <SettingsSheet onClose={() => setSettingsOpen(false)} />}
+    </>
   );
 }

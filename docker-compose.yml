@@ -1,0 +1,23 @@
+services:
+  dashboard:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: f1-visualizer
+    ports:
+      - '3001:3001'
+    environment:
+      NODE_ENV: production
+      PORT: '3001'
+      # The dashboard is served from this same origin, so no cross-origin allowance is
+      # needed. Set this to your site's origin if you serve the frontend elsewhere.
+      CORS_ORIGIN: 'http://localhost:3001'
+      LOG_LEVEL: info
+      # Pin a race with REPLAY_SESSION_KEY; blank picks the latest completed one.
+      REPLAY_SESSION_KEY: ''
+    volumes:
+      - openf1-cache:/app/.cache
+    restart: unless-stopped
+
+volumes:
+  openf1-cache:

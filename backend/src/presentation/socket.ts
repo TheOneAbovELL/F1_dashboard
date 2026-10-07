@@ -9,7 +9,12 @@ const DriverNumber = z.number().int().min(1).max(99);
 const Speed = z.number().min(0.1).max(20);
 const SeekMs = z.number().int().min(0).max(6 * 60 * 60 * 1000);
 
-export function attachSocket(http: HttpServer, provider: IDataProvider): Server {
+/**
+ * Wires the provider's output to connected clients. Starting the provider is the
+ * caller's job, so a load failure can be reported rather than lost in a floating
+ * promise.
+ */
+export function attachSocket(http: HttpServer, provider: IDataProvider): { io: Server; sink: DataSink } {
   const io = new Server(http, {
     cors: { origin: corsOrigins, methods: ['GET', 'POST'] },
     perMessageDeflate: { threshold: 2048 },
@@ -65,6 +70,5 @@ export function attachSocket(http: HttpServer, provider: IDataProvider): Server 
     socket.on('disconnect', () => log.socket.debug({ id: socket.id }, 'client disconnected'));
   });
 
-  void provider.start(sink);
-  return io;
+  return { io, sink };
 }

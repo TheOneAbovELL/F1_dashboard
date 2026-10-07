@@ -1,0 +1,23 @@
+{
+  "name": "f1-live-track-visualizer",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Unofficial Formula 1 race replay dashboard built on OpenF1 data.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "setup": "npm --prefix backend ci && npm --prefix frontend ci",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm --prefix backend run build && npm --prefix frontend run build",
+    "start": "npm run build && npm --prefix backend run start",
+    "serve": "npm --prefix backend run start",
+    "test": "npm --prefix backend test && npm --prefix frontend test",
+    "typecheck": "npm --prefix backend run typecheck && npm --prefix frontend run typecheck",
+    "verify": "npm --prefix backend run verify",
+    "prefetch": "npm --prefix backend run prefetch",
+    "check": "npm run typecheck && npm test && npm run build"
+  }
+}

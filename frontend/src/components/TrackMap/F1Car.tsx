@@ -1,4 +1,6 @@
+/** Both car symbols share the viewBox "-22 -12 44 24". */
 export const CAR_LENGTH = 44;
+export const CAR_HEIGHT = 24;
 
 export function CarSymbols() {
   return (

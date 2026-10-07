@@ -10,31 +10,48 @@ import { SessionCatalog } from './application/SessionCatalog.js';
 import { ReplayEngine } from './application/ReplayEngine.js';
 import { buildRoutes } from './presentation/routes.js';
 import { attachSocket } from './presentation/socket.js';
+import { serveFrontend } from './presentation/staticSite.js';
 import type { IDataProvider } from './domain/IDataProvider.js';
 
 async function main(): Promise<void> {
   const catalog = new SessionCatalog(openf1);
 
-  let sessionKey = config.REPLAY_SESSION_KEY;
-  if (!sessionKey) {
-    const recent = await catalog.mostRecent();
-    if (!recent) throw new Error('no completed race sessions available from OpenF1');
-    sessionKey = recent.sessionKey;
-    log.boot.info(
-      { circuit: recent.circuitShortName, year: recent.year, sessionKey },
-      'auto-selected most recent completed race',
-    );
-  }
-
-  const provider: IDataProvider = new ReplayEngine(openf1, sessionKey);
+  // The engine resolves the session itself. Nothing here awaits OpenF1, so the server
+  // always reaches the point of listening and can report an upstream failure through
+  // /api/health instead of dying before it opens a port.
+  const provider: IDataProvider = new ReplayEngine(
+    openf1,
+    config.REPLAY_SESSION_KEY ?? null,
+    catalog,
+  );
 
   const app = express();
   app.disable('x-powered-by');
-  app.use(helmet());
+  app.use(
+    helmet({
+      // The bundle is same-origin; fonts and their stylesheet come from Google Fonts,
+      // and driver headshots are hotlinked from the F1 media CDN over https.
+      contentSecurityPolicy: {
+        directives: {
+          ...helmet.contentSecurityPolicy.getDefaultDirectives(),
+          'script-src': ["'self'"],
+          'style-src': ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+          'font-src': ["'self'", 'data:', 'https://fonts.gstatic.com'],
+          'img-src': ["'self'", 'data:', 'https:'],
+          'connect-src': ["'self'", 'ws:', 'wss:'],
+          'upgrade-insecure-requests': null,
+        },
+      },
+      crossOriginEmbedderPolicy: false,
+    }),
+  );
   app.use(cors({ origin: corsOrigins }));
   app.use(compression());
   app.use(express.json({ limit: '64kb' }));
   app.use('/api', buildRoutes(catalog, provider));
+  app.use('/api', (_req, res) => res.status(404).json({ error: 'not found' }));
+
+  serveFrontend(app);
 
   app.use((err: unknown, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
     log.boot.error({ err }, 'unhandled request error');
@@ -42,10 +59,22 @@ async function main(): Promise<void> {
   });
 
   const http = createServer(app);
-  const io = attachSocket(http, provider);
+  const { io, sink } = attachSocket(http, provider);
 
-  http.listen(config.PORT, () => {
-    log.boot.info({ port: config.PORT, provider: provider.name }, 'backend listening');
+  await new Promise<void>((resolve, reject) => {
+    http.once('error', reject);
+    http.listen(config.PORT, () => {
+      log.boot.info({ port: config.PORT, provider: provider.name }, 'backend listening');
+      resolve();
+    });
+  });
+
+  // Loading a whole race takes minutes on a cold cache, so the server accepts
+  // connections first and streams progress. A failure here is terminal for the replay
+  // but must not take the process down silently: clients are told, and /api/health
+  // reports it.
+  provider.start(sink).catch((err) => {
+    log.boot.error({ err }, 'replay failed to load');
   });
 
   const shutdown = async (signal: string) => {

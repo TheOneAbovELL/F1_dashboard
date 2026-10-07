@@ -6,6 +6,8 @@ const Schema = z.object({
   NODE_ENV: z.enum(['development', 'production', 'test']).default('development'),
   CORS_ORIGIN: z.string().default('http://localhost:5173'),
   LOG_LEVEL: z.enum(['trace', 'debug', 'info', 'warn', 'error']).default('info'),
+  /** Overrides where the compiled server looks for the built single-page app. */
+  FRONTEND_DIST_DIR: z.string().optional(),
 
   DATA_PROVIDER: z.enum(['replay', 'live']).default('replay'),
   REPLAY_SESSION_KEY: z.coerce.number().int().positive().optional(),

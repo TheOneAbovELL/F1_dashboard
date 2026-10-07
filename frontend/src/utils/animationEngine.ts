@@ -12,6 +12,17 @@ export class AnimationEngine {
   private playbackOffset: number | null = null;
   private readonly out = new Map<number, RenderedCar>();
 
+  /**
+   * Incremented on every reset. Renderers that keep their own derived state — the car
+   * trails, for instance — watch this so a seek does not leave them drawing a line from
+   * where the car used to be to where it now is.
+   */
+  private discontinuity = 0;
+
+  get generation(): number {
+    return this.discontinuity;
+  }
+
   push(positions: CarPosition[], tMs: number): void {
     const byDriver = new Map<number, CarPosition>();
     for (const p of positions) byDriver.set(p.n, p);
@@ -28,6 +39,7 @@ export class AnimationEngine {
     this.buffer = [];
     this.playbackOffset = null;
     this.out.clear();
+    this.discontinuity++;
   }
 
   sample(): Map<number, RenderedCar> {

@@ -1,10 +1,20 @@
 import type { OpenF1Client } from '../openf1/client.js';
 import type { TrackGeometry } from '../../domain/models.js';
+import { toMetres } from '../../domain/units.js';
+import { isDrsOpen } from '../openf1/types.js';
 import { log } from '../logger.js';
 
 const SAMPLE_COUNT = 1400;
 const SMOOTH_PASSES = 2;
 const SMOOTH_WINDOW = 5;
+
+/**
+ * Every length below is in metres: location samples are converted as they are read,
+ * so the thresholds can be stated in the units a circuit is actually described in.
+ */
+const CORNER_RADIUS_M = 260;
+const MIN_CORNER_ARC_M = 25;
+const MIN_DRS_ZONE_M = 120;
 
 export async function buildTrackGeometry(
   client: OpenF1Client,
@@ -33,7 +43,7 @@ export async function buildTrackGeometry(
 
   const samples = raw
     .filter((p) => Number.isFinite(p.x) && Number.isFinite(p.y) && !(p.x === 0 && p.y === 0))
-    .map((p) => ({ t: Date.parse(p.date), x: p.x, y: p.y }))
+    .map((p) => ({ t: Date.parse(p.date), x: toMetres(p.x), y: toMetres(p.y) }))
     .sort((a, b) => a.t - b.t);
 
   if (samples.length < 80) {
@@ -91,13 +101,13 @@ export async function buildTrackGeometry(
 
 export class TrackBuildError extends Error {}
 
-function median(xs: number[]): number {
+export function median(xs: number[]): number {
   if (xs.length === 0) return 0;
   const s = [...xs].sort((a, b) => a - b);
   return s[Math.floor(s.length / 2)]!;
 }
 
-function cumulativeLengths(pts: [number, number][]): number[] {
+export function cumulativeLengths(pts: [number, number][]): number[] {
   const cum = [0];
   for (let i = 1; i <= pts.length; i++) {
     const a = pts[i - 1]!;
@@ -107,7 +117,7 @@ function cumulativeLengths(pts: [number, number][]): number[] {
   return cum;
 }
 
-function resampleByArcLength(pts: [number, number][], count: number): [number, number][] {
+export function resampleByArcLength(pts: [number, number][], count: number): [number, number][] {
   const closed = [...pts, pts[0]!];
   const cum = cumulativeLengths(pts);
   const total = cum[cum.length - 1]!;
@@ -127,7 +137,7 @@ function resampleByArcLength(pts: [number, number][], count: number): [number, n
   return out;
 }
 
-function smoothClosed(pts: [number, number][], window: number): [number, number][] {
+export function smoothClosed(pts: [number, number][], window: number): [number, number][] {
   const n = pts.length;
   const half = (window - 1) / 2;
   return pts.map((_, i) => {
@@ -179,12 +189,19 @@ async function detectDrsZones(
   samples: { t: number; x: number; y: number }[],
   lengthM: number,
 ): Promise<[number, number][]> {
-  const rows = await client.carData({
-    session_key: sessionKey,
-    driver_number: driverNumber,
-    'date>=': new Date(startMs).toISOString(),
-    'date<=': new Date(endMs).toISOString(),
+  // The windowed car_data responses come back with `drs: null`, so the driver's whole
+  // session is fetched and narrowed here instead. It is the same request the telemetry
+  // subscription makes later, so the cache entry is shared.
+  const all = await client.carData({ session_key: sessionKey, driver_number: driverNumber });
+  const rows = all.filter((r) => {
+    const t = Date.parse(r.date);
+    return t >= startMs && t <= endMs;
   });
+
+  if (!rows.some((r) => r.drs !== null)) {
+    log.track.warn({ sessionKey, driverNumber }, 'no DRS readings on the reference lap');
+    return [];
+  }
 
   const raw = cumulativeLengths(samples.map((p) => [p.x, p.y] as [number, number]));
   const scale = lengthM / (raw[raw.length - 1]! || lengthM);
@@ -197,16 +214,15 @@ async function detectDrsZones(
     return (raw[lo] ?? 0) * scale;
   };
 
-  const open = [10, 12, 14];
   const zones: [number, number][] = [];
   let zoneStart: number | null = null;
 
   for (const r of rows.sort((a, b) => Date.parse(a.date) - Date.parse(b.date))) {
-    const isOpen = open.includes(r.drs);
+    const isOpen = isDrsOpen(r.drs);
     const d = distAt(Date.parse(r.date));
     if (isOpen && zoneStart === null) zoneStart = d;
     if (!isOpen && zoneStart !== null) {
-      if (d - zoneStart > 120) zones.push([zoneStart, d]);
+      if (d - zoneStart > MIN_DRS_ZONE_M) zones.push([zoneStart, d]);
       zoneStart = null;
     }
   }
@@ -214,7 +230,7 @@ async function detectDrsZones(
   return zones;
 }
 
-function detectCorners(pts: [number, number][], cum: number[]): number[] {
+export function detectCorners(pts: [number, number][], cum: number[]): number[] {
   const n = pts.length;
   const radii = new Float64Array(n);
   const look = Math.max(3, Math.round(n / 220));
@@ -230,17 +246,16 @@ function detectCorners(pts: [number, number][], cum: number[]): number[] {
     radii[i] = area < 1e-6 ? 1e6 : (ab * bc * ca) / (4 * area);
   }
 
-  const THRESHOLD = 260;
   const corners: number[] = [];
   let runStart = -1;
 
   for (let i = 0; i <= n; i++) {
-    const tight = i < n && radii[i]! < THRESHOLD;
+    const tight = i < n && radii[i]! < CORNER_RADIUS_M;
     if (tight && runStart === -1) runStart = i;
     if (!tight && runStart !== -1) {
       let apex = runStart;
       for (let k = runStart; k < i; k++) if (radii[k]! < radii[apex]!) apex = k;
-      if (cum[i]! - cum[runStart]! > 25) corners.push(apex);
+      if (cum[i]! - cum[runStart]! > MIN_CORNER_ARC_M) corners.push(apex);
       runStart = -1;
     }
   }

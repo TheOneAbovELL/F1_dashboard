@@ -100,6 +100,8 @@ export interface ReplayState {
   speed: number;
   tMs: number;
   durationMs: number;
+  /** Set when the backend could not load the race; shown instead of a stuck spinner. */
+  error: string | null;
 }
 
 export interface DriverStanding {

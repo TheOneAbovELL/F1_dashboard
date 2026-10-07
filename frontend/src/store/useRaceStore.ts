@@ -39,6 +39,7 @@ const initialReplay: ReplayState = {
   speed: 1,
   tMs: 0,
   durationMs: 0,
+  error: null,
 };
 
 export const useRaceStore = create<RaceState>((set, get) => ({
@@ -74,7 +75,11 @@ export const useRaceStore = create<RaceState>((set, get) => ({
       'race:control': (messages) => set({ messages }),
       'replay:state': (replay) => {
         const prev = get().replay;
-        if (replay.tMs < prev.tMs - 1000) animationEngine.reset();
+        // Any jump the replay could not have reached by playing — in either direction —
+        // means the buffered positions no longer describe where the cars are.
+        const drift = Math.abs(replay.tMs - prev.tMs);
+        const reachable = Math.max(2_000, prev.speed * 2_000);
+        if (drift > reachable) animationEngine.reset();
         set({ replay });
       },
     });

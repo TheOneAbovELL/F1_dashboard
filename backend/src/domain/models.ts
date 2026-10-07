@@ -83,4 +83,6 @@ export interface ReplayState {
   speed: number;
   tMs: number;
   durationMs: number;
+  /** Set when loading failed; clients surface it instead of waiting forever. */
+  error: string | null;
 }

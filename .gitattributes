@@ -1,5 +1,10 @@
-*.sh text eol=lf
-*.md text eol=lf
-*.ts text eol=lf
-*.tsx text eol=lf
-*.json text eol=lf
+# Normalise line endings so checkouts are consistent across platforms, and so the
+# container image never receives CRLF in a shell script.
+* text=auto eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.gz binary

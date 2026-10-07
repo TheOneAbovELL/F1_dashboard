@@ -1,0 +1,89 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    name: Type-check, test and build (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node: ['22', '24']
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install dependencies
+        run: npm run setup
+
+      - name: Type-check
+        run: npm run typecheck
+
+      # The suites use fixtures rather than OpenF1, so CI never touches the network.
+      - name: Test
+        run: npm test
+
+      - name: Build
+        run: npm run build
+
+  audit:
+    name: Dependency audit
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm --prefix backend audit --audit-level=high
+      - run: npm --prefix frontend audit --audit-level=high
+
+  docker:
+    name: Docker image builds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          load: true
+          tags: f1-visualizer:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Container starts and answers /api/health
+        run: |
+          docker run -d --name f1 -p 3001:3001 \
+            -e REPLAY_SESSION_KEY=9999 f1-visualizer:ci
+          for i in $(seq 1 30); do
+            if curl -fsS http://localhost:3001/api/health > /dev/null 2>&1; then
+              echo "health endpoint responded"
+              docker logs f1
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "backend did not answer in time"
+          docker logs f1
+          exit 1

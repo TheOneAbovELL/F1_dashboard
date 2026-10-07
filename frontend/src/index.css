@@ -1,29 +1,115 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
+@import 'tailwindcss';
 
-@layer base {
-  :root { color-scheme: dark; }
-  body {
-    @apply bg-f1-void text-f1-text font-sans antialiased;
-    margin: 0;
-    overscroll-behavior: none;
-  }
-  :focus-visible { @apply outline-none ring-2 ring-f1-red ring-offset-2 ring-offset-f1-void; }
+/*
+ * Tailwind v4 takes its theme from CSS rather than a JS config, so the palette lives
+ * here. Each token becomes a utility automatically: --color-f1-red gives bg-f1-red,
+ * text-f1-red, border-f1-red and so on.
+ */
+@theme {
+  --color-f1-void: #06060b;
+  --color-f1-dark: #0a0a11;
+  --color-f1-panel: #101018;
+  --color-f1-raised: #16161f;
+  --color-f1-border: #1f1f2e;
+  --color-f1-line: #2a2a3c;
+  --color-f1-text: #e9e9f2;
+  --color-f1-dim: #7c7c96;
+  --color-f1-dimmer: #4b4b63;
+  --color-f1-red: #e10600;
+  --color-f1-green: #2bd47d;
+  --color-f1-yellow: #ffd54a;
+  --color-f1-purple: #b14bff;
+
+  --font-sans: Inter, 'Segoe UI', system-ui, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', Menlo, monospace;
+
+  --animate-pulse-slow: pulse 2.6s cubic-bezier(0.4, 0, 0.6, 1) infinite;
 }
 
-@layer utilities {
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  body {
+    margin: 0;
+    overscroll-behavior: none;
+    background-color: var(--color-f1-void);
+    color: var(--color-f1-text);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  :focus-visible {
+    outline: none;
+    box-shadow:
+      0 0 0 2px var(--color-f1-void),
+      0 0 0 4px var(--color-f1-red);
+  }
+}
+
+@layer components {
   .glass {
-    @apply bg-f1-panel/75 border border-f1-border backdrop-blur-xl;
+    border: 1px solid var(--color-f1-border);
+    background-color: color-mix(in srgb, var(--color-f1-panel) 75%, transparent);
+    backdrop-filter: blur(24px);
     box-shadow: 0 10px 34px rgb(0 0 0 / 0.45);
   }
+
   .label {
-    @apply text-[8.5px] font-bold uppercase tracking-[0.18em] text-f1-dimmer;
+    font-size: 8.5px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.18em;
+    color: var(--color-f1-dimmer);
+  }
+
+  /*
+   * The scrubber draws its own track, so the native one is hidden and only the thumb is
+   * styled. Without an explicit thumb, `appearance: none` leaves nothing to grab.
+   */
+  .glass input[type='range'] {
+    -webkit-appearance: none;
+    appearance: none;
+    height: 18px;
+    background: transparent;
+  }
+
+  .glass input[type='range']::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 13px;
+    height: 13px;
+    border-radius: 9999px;
+    background: #ffffff;
+    border: 2px solid var(--color-f1-red);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+    cursor: pointer;
+  }
+
+  .glass input[type='range']::-moz-range-thumb {
+    width: 13px;
+    height: 13px;
+    border-radius: 9999px;
+    background: #ffffff;
+    border: 2px solid var(--color-f1-red);
+    box-shadow: 0 1px 4px rgb(0 0 0 / 0.6);
+    cursor: pointer;
+  }
+
+  .glass input[type='range']::-moz-range-track {
+    background: transparent;
+  }
+
+  .glass input[type='range']:disabled::-webkit-slider-thumb {
+    opacity: 0.4;
   }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after {
+  *,
+  *::before,
+  *::after {
     animation-duration: 0.01ms !important;
     transition-duration: 0.01ms !important;
   }

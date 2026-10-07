@@ -1,10 +1,14 @@
 import { mkdir, writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
-import { openf1 } from '../backend/src/infrastructure/openf1/client.js';
-import { SessionCatalog } from '../backend/src/application/SessionCatalog.js';
-import { buildTrackGeometry } from '../backend/src/infrastructure/track/trackBuilder.js';
+import { dirname, join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { openf1 } from '../src/infrastructure/openf1/client.js';
+import { SessionCatalog } from '../src/application/SessionCatalog.js';
+import { buildTrackGeometry } from '../src/infrastructure/track/trackBuilder.js';
 
-const OUT = join(process.cwd(), '..', 'frontend', 'src', 'assets', 'tracks');
+// Resolved from this file rather than the working directory, so the script behaves the
+// same however it is invoked.
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const OUT = join(ROOT, 'frontend', 'src', 'assets', 'tracks');
 
 async function main() {
   await mkdir(OUT, { recursive: true });

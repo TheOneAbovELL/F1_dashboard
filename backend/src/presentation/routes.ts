@@ -9,11 +9,13 @@ export function buildRoutes(catalog: SessionCatalog, provider: IDataProvider): R
   r.use(rateLimit({ windowMs: 60_000, limit: 120, standardHeaders: 'draft-7', legacyHeaders: false }));
 
   r.get('/health', (_req, res) => {
-    const snap = provider.snapshot();
-    res.json({
-      status: snap.state.loaded ? 'ok' : 'loading',
+    const { state } = provider.snapshot();
+    const status = state.error ? 'error' : state.loaded ? 'ok' : 'loading';
+    res.status(state.error ? 503 : 200).json({
+      status,
       provider: provider.name,
-      loadingPct: snap.state.loadingPct,
+      loadingPct: state.loadingPct,
+      error: state.error,
       uptimeSec: Math.round(process.uptime()),
     });
   });

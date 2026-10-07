@@ -1,32 +1,60 @@
 # Dashboard shell
 
-The shell composes the existing visualizer features; source of truth is
+The shell composes the visualizer's panels. The source of truth is
 [`frontend/src/App.tsx`](./frontend/src/App.tsx) and the components under
-[`frontend/src/components/`](./frontend/src/components/). This file describes the
-integrated behavior rather than repeating component source.
+[`frontend/src/components/`](./frontend/src/components/); this describes the integrated
+behaviour.
 
-## Layout and controls
+## Layout
 
-The responsive dashboard includes the top bar, timing tower, track map, telemetry,
-weather, race-control feed, replay scrubber, settings sheet, and compact widget view.
-At widths up to 1180 px it switches to a compact layout; at 760 px and below it uses a
-mobile layout.
+| Width | Layout |
+| --- | --- |
+| Above 1180 px | Three-column grid, fixed height, nothing scrolls |
+| 761–1180 px | Single scrolling column, two-up telemetry and race control |
+| 760 px and below | Single scrolling column, everything full width |
 
-The widget opens in a Document Picture-in-Picture window where supported. Otherwise,
-the same view appears as a floating in-page card. Settings such as map labels, trails,
-sectors, rotation, measurement units, and gap mode persist in browser storage.
+In both narrow layouts the top bar and the replay scrubber stay pinned while the panels
+between them scroll.
 
-Keyboard shortcuts currently implemented:
+## Keyboard shortcuts
 
-- `Space`: play/pause replay.
-- `ArrowUp` / `ArrowDown`: select the previous/next timing-tower driver.
-- `M`: toggle widget mode.
-- `Escape`: close settings or leave widget mode.
+| Key | Action |
+| --- | --- |
+| `Space` | Play or pause |
+| `←` / `→` | Seek 10 seconds back or forward |
+| `Shift` + `←` / `→` | Seek one minute back or forward |
+| `↑` / `↓` | Select the previous or next driver in the timing tower |
+| `M` | Enter or leave widget mode |
+| `Escape` | Close the settings sheet, or leave widget mode |
 
-The replay scrubber also supports pointer/touch seeking via its range control.
+Shortcuts are ignored while a text field or a contenteditable element has focus, so
+typing into one does not drive the replay.
+
+## Replay controls
+
+The scrubber shows elapsed and total replay time, a draggable position handle, and
+speed buttons from 0.5x to 8x. While the handle is held it shows the position being
+dragged to rather than the one still streaming from the backend. The whole control is
+disabled until the backend reports a duration.
+
+Replay commands are sent to the backend, which owns the clock; every connected client
+sees the same point in the race.
+
+## Widget mode
+
+Widget mode opens a compact view — circuit, leader and the top six — in a Document
+Picture-in-Picture window where the browser supports it, and as a fixed in-page card
+where it does not. Document Picture-in-Picture requires a user gesture and is not
+available in every browser, so the fallback is not an error path.
+
+## Settings
+
+Map labels, trails, sector overlays, corner markers, reduced motion, measurement units,
+gap mode and circuit rotation persist in browser storage per browser. "Reset to
+defaults" restores all of them.
 
 ## Scope notes
 
-The left/right keyboard seek described in earlier drafts is not currently wired.
-The widget fallback is a fixed-position card, not a draggable window. Document
-Picture-in-Picture availability depends on browser support and user-gesture rules.
+The widget fallback is a fixed-position card, not a draggable window. Panels are wrapped
+individually in error boundaries, so a failure in one — the track map, say — leaves the
+rest of the dashboard usable and offers a retry.

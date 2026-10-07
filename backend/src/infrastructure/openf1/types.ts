@@ -1,3 +1,8 @@
+/** OpenF1 DRS codes that mean the flap is actually open; 8 means only "eligible". */
+export const DRS_OPEN = new Set([10, 12, 14]);
+
+export const isDrsOpen = (drs: number | null): boolean => drs !== null && DRS_OPEN.has(drs);
+
 export interface RawSession {
   session_key: number;
   meeting_key: number;
@@ -36,12 +41,13 @@ export interface RawLocation {
 export interface RawCarData {
   date: string;
   driver_number: number;
-  speed: number;
-  throttle: number;
-  brake: number;
-  n_gear: number;
-  rpm: number;
-  drs: number;
+  speed: number | null;
+  throttle: number | null;
+  brake: number | null;
+  n_gear: number | null;
+  rpm: number | null;
+  /** Null on some responses — notably narrow date windows — so never assume a number. */
+  drs: number | null;
 }
 
 export interface RawLap {

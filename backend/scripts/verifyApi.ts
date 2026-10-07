@@ -1,4 +1,4 @@
-import { openf1 } from '../backend/src/infrastructure/openf1/client.js';
+import { openf1 } from '../src/infrastructure/openf1/client.js';
 
 const need = (obj: unknown, fields: string[]) =>
   fields.map((f) => `${(obj as Record<string, unknown>)?.[f] !== undefined ? '✓' : '✗'} ${f}`).join('  ');

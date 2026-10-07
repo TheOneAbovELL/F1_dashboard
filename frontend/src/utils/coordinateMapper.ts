@@ -27,7 +27,11 @@ export class CoordinateMapper {
     this.recompute();
   }
 
-  get ready(): boolean { return this.bounds !== null && this.viewport.width > 0; }
+  get ready(): boolean {
+    return this.bounds !== null && this.viewport.width > 0 && this.viewport.height > 0;
+  }
+
+  /** Screen pixels per metre. Track geometry and car positions both arrive in metres. */
   get pxPerMetre(): number { return this.scale; }
 
   private recompute(): void {
@@ -57,8 +61,14 @@ export class CoordinateMapper {
 
     const spanX = rmaxX - rminX || 1;
     const spanY = rmaxY - rminY || 1;
-    const usableW = v.width - v.padding * 2;
-    const usableH = v.height - v.padding * 2;
+
+    // A panel can be shorter than twice the requested padding. Without this clamp the
+    // usable box goes negative and the whole circuit collapses to a few pixels, or
+    // inverts.
+    const padX = Math.min(v.padding, Math.max(0, v.width / 2 - 1));
+    const padY = Math.min(v.padding, Math.max(0, v.height / 2 - 1));
+    const usableW = Math.max(1, v.width - padX * 2);
+    const usableH = Math.max(1, v.height - padY * 2);
     this.scale = Math.min(usableW / spanX, usableH / spanY);
 
     this.offsetX = v.width / 2 - ((rminX + rmaxX) / 2) * this.scale;

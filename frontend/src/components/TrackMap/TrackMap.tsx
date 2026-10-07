@@ -111,12 +111,37 @@ export function TrackMap({
         </div>
       )}
 
-      {loading && <LoadingOverlay pct={replay.loadingPct} status={status} />}
+      {loading && (
+        <LoadingOverlay pct={replay.loadingPct} status={status} error={replay.error} />
+      )}
     </div>
   );
 }
 
-function LoadingOverlay({ pct, status }: { pct: number; status: string }) {
+function LoadingOverlay({
+  pct,
+  status,
+  error,
+}: {
+  pct: number;
+  status: string;
+  error: string | null;
+}) {
+  if (error) {
+    return (
+      <div className="absolute inset-0 grid place-items-center bg-f1-void/80 p-6 backdrop-blur-sm">
+        <div className="max-w-sm text-center" role="alert">
+          <div className="label mb-2 text-f1-red">Race data could not be loaded</div>
+          <p className="text-[11px] leading-relaxed text-f1-dim">{error}</p>
+          <p className="mt-3 text-[10.5px] leading-relaxed text-f1-dimmer">
+            The backend reached OpenF1 but could not build this session. Check the backend
+            log, then restart it — optionally with a different REPLAY_SESSION_KEY.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   const message =
     status === 'offline' ? 'Cannot reach the backend'
       : status === 'reconnecting' ? 'Reconnecting…'
