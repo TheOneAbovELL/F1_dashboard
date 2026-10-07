@@ -46,7 +46,9 @@ class SocketService {
 
     const url = import.meta.env.VITE_BACKEND_URL ?? '/';
     this.socket = io(url, {
-      transports: ['websocket'],
+      // WebSocket first, but long-polling stays available: a proxy that will not
+      // upgrade the connection should degrade the dashboard, not disconnect it.
+      transports: ['websocket', 'polling'],
       reconnection: true,
       reconnectionAttempts: Infinity,
       reconnectionDelay: 600,
