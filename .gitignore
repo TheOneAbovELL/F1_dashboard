@@ -1,0 +1,25 @@
+# Dependencies
+node_modules/
+
+# Build output and TypeScript incremental state
+dist/
+*.tsbuildinfo
+
+# Local configuration and secrets
+.env
+.env.*
+!.env.example
+
+# OpenF1 response cache and generated data
+.cache/
+frontend/src/assets/tracks/
+
+# Logs and test output
+*.log
+coverage/
+
+# Editors and operating systems
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db

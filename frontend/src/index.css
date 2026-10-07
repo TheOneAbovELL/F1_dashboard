@@ -1,0 +1,30 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root { color-scheme: dark; }
+  body {
+    @apply bg-f1-void text-f1-text font-sans antialiased;
+    margin: 0;
+    overscroll-behavior: none;
+  }
+  :focus-visible { @apply outline-none ring-2 ring-f1-red ring-offset-2 ring-offset-f1-void; }
+}
+
+@layer utilities {
+  .glass {
+    @apply bg-f1-panel/75 border border-f1-border backdrop-blur-xl;
+    box-shadow: 0 10px 34px rgb(0 0 0 / 0.45);
+  }
+  .label {
+    @apply text-[8.5px] font-bold uppercase tracking-[0.18em] text-f1-dimmer;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
